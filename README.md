@@ -110,8 +110,6 @@ $transport = new SmtpTransport(
 );
 ```
 
-## Advanced Features
-
 ### Adding Attachments
 
 ```php
@@ -127,31 +125,6 @@ $message->to('recipient@example.com', 'Recipient Name')
         ->replyTo('reply@example.com', 'Reply Handler');
 ```
 
-## Email Provider Settings
-
-### Gmail
-
-```php
-$transport = new SmtpTransport(
-    'smtp.gmail.com',
-    587,
-    'your-email@gmail.com',
-    'your-app-password',  // Requires App Password with 2FA enabled
-    'tls'
-);
-```
-
-### Outlook/Hotmail
-
-```php
-$transport = new SmtpTransport(
-    'smtp-mail.outlook.com',
-    587,
-    'your-email@outlook.com',
-    'your-password',
-    'tls'
-);
-```
 
 ## License
 
