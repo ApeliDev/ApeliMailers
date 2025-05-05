@@ -13,19 +13,22 @@ class SmtpTransport implements TransportInterface
     private ?string $password;
     private ?string $encryption;
     private $socket = null;
+    private bool $debug = false;
 
     public function __construct(
         string $host,
         int $port = 25,
         ?string $username = null,
         ?string $password = null,
-        ?string $encryption = null
+        ?string $encryption = null,
+        bool $debug = false
     ) {
         $this->host = $host;
         $this->port = $port;
         $this->username = $username;
         $this->password = $password;
         $this->encryption = $encryption;
+        $this->debug = $debug;
     }
 
     public function send(Message $message): bool
@@ -44,9 +47,18 @@ class SmtpTransport implements TransportInterface
 
     private function connect(): void
     {
+        $protocol = 'tcp';
         $context = stream_context_create();
+        
+        // Use SSL if encryption is set to ssl
+        if ($this->encryption === 'ssl') {
+            $protocol = 'ssl';
+            stream_context_set_option($context, 'ssl', 'verify_peer', false);
+            stream_context_set_option($context, 'ssl', 'verify_peer_name', false);
+        }
+
         $this->socket = stream_socket_client(
-            "tcp://{$this->host}:{$this->port}",
+            "$protocol://{$this->host}:{$this->port}",
             $errno,
             $errstr,
             30,
@@ -58,7 +70,8 @@ class SmtpTransport implements TransportInterface
             throw new \RuntimeException("Connection failed: $errstr ($errno)");
         }
 
-        $response = fgets($this->socket);
+        $this->logDebug("Connected to server");
+        $response = $this->getResponse();
         if (strpos($response, '220') === false) {
             throw new \RuntimeException("Server rejected connection: $response");
         }
@@ -66,11 +79,32 @@ class SmtpTransport implements TransportInterface
 
     private function authenticate(): void
     {
+        $this->sendCommand("EHLO " . gethostname());
+        
+        // Initiate TLS if requested
+        if ($this->encryption === 'tls') {
+            $response = $this->sendCommand("STARTTLS");
+            if (strpos($response, '220') === false) {
+                throw new \RuntimeException("Failed to start TLS: $response");
+            }
+            
+            // Enable crypto on the connection
+            if (!stream_socket_enable_crypto(
+                $this->socket,
+                true,
+                STREAM_CRYPTO_METHOD_TLS_CLIENT
+            )) {
+                throw new \RuntimeException("Failed to enable TLS encryption");
+            }
+            
+            // Need to send EHLO again after TLS is established
+            $this->sendCommand("EHLO " . gethostname());
+        }
+        
         if (!$this->username || !$this->password) {
             return;
         }
 
-        $this->sendCommand("EHLO " . $this->host);
         $this->sendCommand("AUTH LOGIN");
         $this->sendCommand(base64_encode($this->username));
         $this->sendCommand(base64_encode($this->password));
@@ -85,8 +119,15 @@ class SmtpTransport implements TransportInterface
         }
 
         $this->sendCommand("DATA");
-        $this->sendCommand($this->buildEmailData($message));
-        $this->sendCommand(".");
+        
+        // For DATA command, we don't use sendCommand as it has different response codes
+        fwrite($this->socket, $this->buildEmailData($message) . "\r\n.\r\n");
+        $response = $this->getResponse();
+        $this->logDebug("RESPONSE: $response");
+        
+        if (strpos($response, '250') === false) {
+            throw new \RuntimeException("Failed to send email data: $response");
+        }
     }
 
     private function buildEmailData(Message $message): string
@@ -100,6 +141,8 @@ class SmtpTransport implements TransportInterface
             "Subject: {$message->getSubject()}",
             "MIME-Version: 1.0",
             "Content-Type: text/html; charset=utf-8",
+            "Date: " . date('r'),
+            "Message-ID: <" . time() . rand(1000, 9999) . "@" . parse_url($this->host, PHP_URL_HOST) . ">",
         ];
 
         return implode("\r\n", $headers) . "\r\n\r\n" . $message->getHtmlBody();
@@ -107,13 +150,29 @@ class SmtpTransport implements TransportInterface
 
     private function sendCommand(string $command): string
     {
+        $this->logDebug("COMMAND: $command");
         fwrite($this->socket, $command . "\r\n");
-        $response = fgets($this->socket);
+        $response = $this->getResponse();
+        $this->logDebug("RESPONSE: $response");
         
-        if (!str_starts_with($response, '2') && !str_starts_with($response, '3')) {
+        $code = substr($response, 0, 3);
+        if (!in_array($code[0], ['2', '3'])) {
             throw new \RuntimeException("Command failed: $command → $response");
         }
 
+        return $response;
+    }
+    
+    private function getResponse(): string
+    {
+        $response = '';
+        while (($line = fgets($this->socket)) !== false) {
+            $response .= $line;
+            // If the 4th character is a space, this is the last line of response
+            if (isset($line[3]) && $line[3] === ' ') {
+                break;
+            }
+        }
         return $response;
     }
 
@@ -122,10 +181,20 @@ class SmtpTransport implements TransportInterface
         if (is_resource($this->socket)) {
             try {
                 $this->sendCommand("QUIT");
+            } catch (\Exception $e) {
+                // Ignore exceptions during disconnect
+                $this->logDebug("Error during disconnect: " . $e->getMessage());
             } finally {
                 fclose($this->socket);
                 $this->socket = null;
             }
+        }
+    }
+    
+    private function logDebug(string $message): void
+    {
+        if ($this->debug) {
+            error_log("[SMTP DEBUG] $message");
         }
     }
 }

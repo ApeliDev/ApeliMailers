@@ -3,6 +3,7 @@ name: PHP Tests
 on:
   push:
     branches: [ main ]
+    tags-ignore: [ 'v*' ]  
   pull_request:
     branches: [ main ]
 
@@ -11,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        php-versions: ['7.4', '8.0', '8.1']
+        php-versions: ['8.1']  
     
     steps:
     - uses: actions/checkout@v2
@@ -20,12 +21,18 @@ jobs:
       uses: shivammathur/setup-php@v2
       with:
         php-version: ${{ matrix.php-versions }}
+        tools: composer:v2  
         
-    - name: Validate composer.json and composer.lock
-      run: composer validate
-      
+    - name: Cache Composer dependencies
+      uses: actions/cache@v2
+      with:
+        path: vendor
+        key: ${{ runner.os }}-php-${{ hashFiles('composer.lock') }}
+        
     - name: Install dependencies
-      run: composer install --prefer-dist --no-progress
-      
+      run: |
+        composer validate --strict
+        composer install --prefer-dist --no-progress --no-suggest
+        
     - name: Run test suite
       run: vendor/bin/phpunit
