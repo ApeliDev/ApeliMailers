@@ -14,6 +14,7 @@ class SmtpTransport implements TransportInterface
     private ?string $encryption;
     private $socket = null;
     private bool $debug = false;
+    private bool $authenticated = false;
 
     public function __construct(
         string $host,
@@ -35,30 +36,36 @@ class SmtpTransport implements TransportInterface
     {
         try {
             $this->connect();
-            $this->authenticate();
             $this->sendEmail($message);
-            $this->disconnect();
             return true;
-        } catch (\RuntimeException $e) {
-            $this->disconnect();
+        } catch (\Exception $e) {
+            $this->logDebug("Error: " . $e->getMessage());
             throw new MailException("SMTP Error: " . $e->getMessage(), 0, $e);
+        } finally {
+            $this->disconnect();
         }
     }
 
     private function connect(): void
     {
+        // Choose the right protocol based on encryption setting
         $protocol = 'tcp';
         $context = stream_context_create();
         
-        // Use SSL if encryption is set to ssl
+        // If using SSL (implicit TLS), set the protocol
         if ($this->encryption === 'ssl') {
             $protocol = 'ssl';
             stream_context_set_option($context, 'ssl', 'verify_peer', false);
             stream_context_set_option($context, 'ssl', 'verify_peer_name', false);
         }
 
-        $this->socket = stream_socket_client(
-            "$protocol://{$this->host}:{$this->port}",
+        $this->logDebug("Connecting to {$this->host}:{$this->port} using {$protocol}");
+        
+        // Connect to the server
+        $errno = 0;
+        $errstr = '';
+        $this->socket = @stream_socket_client(
+            "{$protocol}://{$this->host}:{$this->port}",
             $errno,
             $errstr,
             30,
@@ -70,85 +77,109 @@ class SmtpTransport implements TransportInterface
             throw new \RuntimeException("Connection failed: $errstr ($errno)");
         }
 
-        $this->logDebug("Connected to server");
-        $response = $this->getResponse();
-        if (strpos($response, '220') === false) {
-            throw new \RuntimeException("Server rejected connection: $response");
+        // Set stream timeout
+        stream_set_timeout($this->socket, 30);
+        
+        // Read the server greeting
+        $greeting = $this->getResponse();
+        $this->logDebug("Server greeting: $greeting");
+        
+        if (strpos($greeting, '220') === false) {
+            throw new \RuntimeException("Server rejected connection: $greeting");
         }
-    }
 
-    private function authenticate(): void
-    {
-        // Use a fallback if gethostname() fails
-        $hostname = gethostname();
-        if ($hostname === false) {
-            $hostname = 'localhost';
-        }
+        // First, send EHLO
+        $hostname = gethostname() ?: 'localhost';
+        $ehloResponse = $this->sendCommand("EHLO {$hostname}");
+        $this->logDebug("EHLO response: $ehloResponse");
         
-        $this->sendCommand("EHLO " . $hostname);
-        
-        // Initiate TLS if requested
+        // If using TLS, initiate STARTTLS
         if ($this->encryption === 'tls') {
             $this->logDebug("Starting TLS negotiation");
-            $response = $this->sendCommand("STARTTLS");
+            $tlsResponse = $this->sendCommand("STARTTLS");
+            $this->logDebug("STARTTLS response: $tlsResponse");
             
-            if (strpos($response, '220') === false) {
-                throw new \RuntimeException("Failed to start TLS: $response");
+            if (strpos($tlsResponse, '220') === false) {
+                throw new \RuntimeException("Failed to start TLS: $tlsResponse");
             }
             
-            // Enable crypto on the connection with proper method selection
+            // Enable TLS on the connection
             $crypto_methods = STREAM_CRYPTO_METHOD_TLS_CLIENT;
             
-            // PHP 5.6+ compatibility
+            // For PHP 5.6+
             if (defined('STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT')) {
                 $crypto_methods |= STREAM_CRYPTO_METHOD_TLSv1_2_CLIENT;
                 $crypto_methods |= STREAM_CRYPTO_METHOD_TLSv1_1_CLIENT;
             }
             
             $this->logDebug("Enabling TLS encryption");
-            if (!stream_socket_enable_crypto(
-                $this->socket,
-                true,
-                $crypto_methods
-            )) {
+            if (!@stream_socket_enable_crypto($this->socket, true, $crypto_methods)) {
                 throw new \RuntimeException("Failed to enable TLS encryption");
             }
+            
             $this->logDebug("TLS encryption enabled successfully");
             
-            // Need to send EHLO again after TLS is established
-            $this->sendCommand("EHLO " . $hostname);
+            // After TLS is established, need to send EHLO again
+            $ehloResponse = $this->sendCommand("EHLO {$hostname}");
+            $this->logDebug("EHLO after TLS response: $ehloResponse");
         }
         
-        // Only proceed with authentication if credentials are provided
-        if (!$this->username || !$this->password) {
-            $this->logDebug("No credentials provided, skipping authentication");
-            return;
+        // Authenticate if credentials are provided
+        if ($this->username && $this->password) {
+            $this->logDebug("Starting authentication");
+            $authResponse = $this->sendCommand("AUTH LOGIN");
+            $this->logDebug("AUTH LOGIN response: $authResponse");
+            
+            $userResponse = $this->sendCommand(base64_encode($this->username));
+            $this->logDebug("Username response: $userResponse");
+            
+            $passResponse = $this->sendCommand(base64_encode($this->password));
+            $this->logDebug("Password response: $passResponse");
+            
+            if (strpos($passResponse, '235') === false) {
+                throw new \RuntimeException("Authentication failed: $passResponse");
+            }
+            
+            $this->authenticated = true;
+            $this->logDebug("Authentication successful");
         }
-
-        $this->logDebug("Starting authentication");
-        $this->sendCommand("AUTH LOGIN");
-        $this->sendCommand(base64_encode($this->username));
-        $this->sendCommand(base64_encode($this->password));
-        $this->logDebug("Authentication successful");
     }
 
     private function sendEmail(Message $message): void
     {
-        $this->sendCommand("MAIL FROM:<{$message->getFrom()['email']}>");
-        
-        foreach ($message->getTo() as $recipient) {
-            $this->sendCommand("RCPT TO:<{$recipient['email']}>");
+        // Make sure we are connected and authenticated
+        if (!$this->socket || !$this->authenticated) {
+            throw new \RuntimeException("Not connected or authenticated to SMTP server");
         }
-
-        $this->sendCommand("DATA");
         
-        // For DATA command, we don't use sendCommand as it has different response codes
-        fwrite($this->socket, $this->buildEmailData($message) . "\r\n.\r\n");
-        $response = $this->getResponse();
-        $this->logDebug("RESPONSE: $response");
+        // Send MAIL FROM
+        $fromResponse = $this->sendCommand("MAIL FROM:<{$message->getFrom()['email']}>");
+        $this->logDebug("MAIL FROM response: $fromResponse");
         
-        if (strpos($response, '250') === false) {
-            throw new \RuntimeException("Failed to send email data: $response");
+        // Send RCPT TO for each recipient
+        foreach ($message->getTo() as $recipient) {
+            $rcptResponse = $this->sendCommand("RCPT TO:<{$recipient['email']}>");
+            $this->logDebug("RCPT TO response: $rcptResponse");
+        }
+        
+        // Send DATA command
+        $dataResponse = $this->sendCommand("DATA");
+        $this->logDebug("DATA response: $dataResponse");
+        
+        if (strpos($dataResponse, '354') === false) {
+            throw new \RuntimeException("DATA command failed: $dataResponse");
+        }
+        
+        // Send email content
+        $emailData = $this->buildEmailData($message);
+        fwrite($this->socket, $emailData . "\r\n.\r\n");
+        
+        // Get response after data
+        $endDataResponse = $this->getResponse();
+        $this->logDebug("End DATA response: $endDataResponse");
+        
+        if (strpos($endDataResponse, '250') === false) {
+            throw new \RuntimeException("Failed to send email data: $endDataResponse");
         }
     }
 
@@ -164,7 +195,8 @@ class SmtpTransport implements TransportInterface
             "MIME-Version: 1.0",
             "Content-Type: text/html; charset=utf-8",
             "Date: " . date('r'),
-            "Message-ID: <" . time() . rand(1000, 9999) . "@" . parse_url($this->host, PHP_URL_HOST) . ">",
+            "Message-ID: <" . md5(uniqid(time())) . "@" . parse_url($this->host, PHP_URL_HOST) . ">",
+            "X-Mailer: ApeliMailers",
         ];
 
         return implode("\r\n", $headers) . "\r\n\r\n" . $message->getHtmlBody();
@@ -173,6 +205,11 @@ class SmtpTransport implements TransportInterface
     private function sendCommand(string $command): string
     {
         $this->logDebug("COMMAND: $command");
+        
+        if (!$this->socket || @feof($this->socket)) {
+            throw new \RuntimeException("Connection closed");
+        }
+        
         fwrite($this->socket, $command . "\r\n");
         $response = $this->getResponse();
         $this->logDebug("RESPONSE: $response");
@@ -187,12 +224,13 @@ class SmtpTransport implements TransportInterface
     
     private function getResponse(): string
     {
+        if (!$this->socket || @feof($this->socket)) {
+            throw new \RuntimeException("Connection closed while reading response");
+        }
+        
         $response = '';
         $startTime = time();
         $timeout = 30; // 30 seconds timeout
-        
-        // Set socket timeout to prevent hang
-        stream_set_timeout($this->socket, $timeout);
         
         while (($line = @fgets($this->socket)) !== false) {
             // Check for timeout
@@ -206,11 +244,8 @@ class SmtpTransport implements TransportInterface
                 throw new \RuntimeException("Socket timeout while reading response");
             }
             
-            if ($line === false) {
-                throw new \RuntimeException("Connection closed by remote server");
-            }
-            
             $response .= $line;
+            
             // If the 4th character is a space, this is the last line of response
             if (isset($line[3]) && $line[3] === ' ') {
                 break;
@@ -226,28 +261,28 @@ class SmtpTransport implements TransportInterface
 
     private function disconnect(): void
     {
-        if (is_resource($this->socket)) {
-            try {
-                // Only attempt QUIT if the socket is still valid
-                if (@feof($this->socket) === false) {
-                    $this->logDebug("Sending QUIT command");
-                    // Write QUIT directly rather than using sendCommand to avoid exceptions
+        if ($this->socket) {
+            if (!@feof($this->socket)) {
+                try {
+                    $this->logDebug("Closing connection gracefully");
+                    // Don't use sendCommand here to avoid exception loops
                     fwrite($this->socket, "QUIT\r\n");
-                    // Wait briefly for a response but don't require one
+                    
+                    // Try to read the response but don't require it
                     stream_set_timeout($this->socket, 1);
                     $response = @fgets($this->socket);
                     if ($response) {
                         $this->logDebug("QUIT response: " . trim($response));
                     }
+                } catch (\Exception $e) {
+                    $this->logDebug("Error during disconnect: " . $e->getMessage());
                 }
-            } catch (\Exception $e) {
-                // Ignore exceptions during disconnect
-                $this->logDebug("Error during disconnect: " . $e->getMessage());
-            } finally {
-                $this->logDebug("Closing socket connection");
-                fclose($this->socket);
-                $this->socket = null;
             }
+            
+            fclose($this->socket);
+            $this->socket = null;
+            $this->authenticated = false;
+            $this->logDebug("Connection closed");
         }
     }
     
