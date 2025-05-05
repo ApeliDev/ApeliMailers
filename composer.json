@@ -31,8 +31,8 @@
 
     "funding": [
         {
-            "type": "paypal",
-            "email": "livingstoneapeli@gmail.com"
+            "type": "lipia online",
+            "url": "https://lipia-online.vercel.app/link/Apelisolutions"
         }
     ],
     "autoload": {
