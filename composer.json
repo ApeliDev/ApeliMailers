@@ -1,13 +1,47 @@
 {
     "name": "apeli/apelimailers",
-    "description": "A standalone PHP email library with SMTP, templating, and analytics",
+    "description": "A lightweight, dependency-free PHP email library with SMTP, templating, queues, and analytics",
     "type": "library",
     "license": "MIT",
-    "keywords": ["email", "smtp", "mailer", "php"],
+    "keywords": [
+        "email",
+        "smtp",
+        "mailer",
+        "mail",
+        "queue",
+        "analytics",
+        "tracking",
+        "php"
+    ],
+    "homepage": "https://github.com/yourusername/ApeliMailers",
+    "authors": [
+        {
+            "name": "Livingstone Apeli",
+            "email": "livingstoneapeli@gmail.comm",
+            "homepage": "https://apelisolutions.com",
+            "role": "Software Developer"
+        }
+    ],
+    "support": {
+        "email": "livingstoneapeli@gmail.com",
+        "issues": "https://github.com/ApeliDev/ApeliMailers/issues",
+        "docs": "https://github.com/ApeliDev/ApeliMailers/wiki",
+        "source": "https://github.com/ApeliDev/ApeliMailers"
+    },
+    
+    "funding": [
+        {
+            "type": "paypal",
+            "email": "livingstoneapeli@gmail.com"
+        }
+    ],
     "autoload": {
         "psr-4": {
             "ApeliMailers\\": "src/"
-        }
+        },
+        "files": [
+            "src/helpers.php"
+        ]
     },
     "autoload-dev": {
         "psr-4": {
@@ -17,30 +51,62 @@
     "require": {
         "php": "^8.1",
         "ext-json": "*",
-        "ext-openssl": "*"
+        "ext-openssl": "*",
+        "ext-mbstring": "*"
     },
     "require-dev": {
         "phpunit/phpunit": "^9.5",
-        "mockery/mockery": "^2.0",
+        "mockery/mockery": "^1.4",
         "phpstan/phpstan": "^1.9",
-        "squizlabs/php_codesniffer": "^3.7"
+        "squizlabs/php_codesniffer": "^3.7",
+        "vimeo/psalm": "^5.4"
+    },
+    "suggest": {
+        "twig/twig": "For template rendering support",
+        "guzzlehttp/guzzle": "Required for SendGrid/Mailgun webhooks",
+        "ext-curl": "Alternative for webhook delivery",
+        "predis/predis": "For Redis queue support"
     },
     "scripts": {
         "test": "phpunit",
+        "test-coverage": "phpunit --coverage-html coverage",
         "lint": "phpcs --standard=PSR12 src tests",
+        "fix": "phpcbf --standard=PSR12 src tests",
         "analyse": "phpstan analyse",
+        "psalm": "psalm",
         "check": [
             "@lint",
             "@analyse",
+            "@psalm",
             "@test"
+        ],
+        "post-install-cmd": [
+            "@composer dump-autoload"
+        ],
+        "post-update-cmd": [
+            "@composer dump-autoload"
         ]
     },
     "config": {
         "sort-packages": true,
         "allow-plugins": {
-            "phpstan/extension-installer": true
-        }
+            "phpstan/extension-installer": true,
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        },
+        "optimize-autoloader": true,
+        "preferred-install": "dist",
+        "platform-check": true
     },
-    "minimum-stability": "dev",
-    "prefer-stable": true
+    "minimum-stability": "stable",
+    "prefer-stable": true,
+    "archive": {
+        "exclude": [
+            "/tests",
+            "/.github",
+            "/examples",
+            ".gitignore",
+            "phpstan.neon",
+            "psalm.xml"
+        ]
+    }
 }
