@@ -13,11 +13,11 @@
         "tracking",
         "php"
     ],
-    "homepage": "https://github.com/yourusername/ApeliMailers",
+    "homepage": "https://github.com/ApeliDev/ApeliMailers",
     "authors": [
         {
             "name": "Livingstone Apeli",
-            "email": "livingstoneapeli@gmail.comm",
+            "email": "livingstoneapeli@gmail.com",
             "homepage": "https://apelisolutions.com",
             "role": "Software Developer"
         }
@@ -28,7 +28,7 @@
         "docs": "https://github.com/ApeliDev/ApeliMailers/wiki",
         "source": "https://github.com/ApeliDev/ApeliMailers"
     },
-    
+
     "funding": [
         {
             "type": "paypal",
