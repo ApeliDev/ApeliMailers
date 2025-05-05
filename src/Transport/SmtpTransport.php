@@ -265,7 +265,6 @@ class SmtpTransport implements TransportInterface
             if (!@feof($this->socket)) {
                 try {
                     $this->logDebug("Closing connection gracefully");
-                    // Don't use sendCommand here to avoid exception loops
                     fwrite($this->socket, "QUIT\r\n");
                     
                     // Try to read the response but don't require it
